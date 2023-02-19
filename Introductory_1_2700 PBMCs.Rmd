@@ -1,0 +1,211 @@
+---
+title: "Introductory_2700PBMCs"
+output: html_document
+date: "2023-02-19"
+---
+
+```{r}
+library(dplyr) # 데이터 처리에 필요
+library(Seurat)
+library(patchwork) # 그래프 여러게 이어 붙일 때 필요
+library(Matrix)
+```
+
+# 1. Setup the Seurat Object
+
+```{r}
+#load the PBMC dataset. columns이 세포 하나하나, row는 gene 하나하나를 의미
+pbmc.data <- Read10X(data.dir = "H:\\내 드라이브\\dev\\seurat_practice\\filtered_gene_bc_matrices\\hg19\\")
+```
+
+
+
+## *참고: 데이터 살펴보기
+
+### - 맨 처음 세포 30개에 대해 맨 위 gene 10개 뽑아보기
+
+```{r}
+pbmc.data[1:10, 1:30] 
+```
+
+### - 특정 유전자 발현하는 세포 찾아보기
+
+```{r}
+which(pbmc.data["CCR2",]!=0)
+```
+
+## Seurat object 지정해주기
+
+```{r}
+# Initialize the Seurat object with the raw (non-normalized data).
+pbmc <- CreateSeuratObject(counts = pbmc.data, #raw data 지정하기 (아까 불러온 것)
+                           project = "pbmc3k", # 이름 지정 (이 프로젝트의 이름)
+                           min.cells = 3, # 적어도 특정 유전자를 발현한 세포가 이정도는 되어야 한다. 
+                           min.features = 200) # 적어도 이정도의 갯수의 유전자는 발현하고 있어야 한다. 
+pbmc 
+
+# 앞에 5개 meta data 보기
+pbmc@meta.data[1:5,]
+```
+세포 안에는 mitochondrial RNA가 섞여 있을 수 있다. 실제로 우리의 pbmc.data안에 MT-로 시작하는 애들은 미토콘드리아 유래다. 
+따라서 다룰 때 주의해야 한다. 
+ 
+
+
+
+
+
+---
+# 2. Standard pre-processing workflow (퀄리티 안 좋은 세포 버리기)
+ - Selection, filtration, data normalization, scaling, detection
+
+## 1) Mitochondrial RNA 발현 수치 기록
+ 일단 mitochodrial RNA 발현이 높은 셀을 걸러내기 위해서 각 세포의 mitochondrial RNA 비율을 "percent.mt"에 PercentageFeatureSet 함수를 사용하여 기록한다.
+ 
+```{r}
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-") # pbmc.data 안에 "MT-"로 시작하는 애들은 미토콘드리아 RNA다. (^는 시작, $는 끝)
+
+# 데이터에서 직접 MT-로 시작하는 RNA를 grep 함수로 찾아보기
+grep("^MT-", rownames(pbmc.data))
+rownames(pbmc.data)[c(grep("^MT-", rownames(pbmc.data)))]
+
+# 데이터 5개만 봐보기
+head(pbmc@meta.data, 5)
+
+```
+ 
+ 이제 데이터를 visualize 시키기. violin plot을 사용
+ 
+```{r}
+# Visualize QC metrics as a violin plot
+# nFeature_RNA: 각 세포에서 detect된 gene의 수 -> low: 죽거나, 죽어가거나, 빈 droplet, high: doublet or multiplet
+# nCount_RNA: 각 세포에서 detect된 molecule의 수 -> high: double or multiplet
+# percent.mt: mitochondrial RNA 비율이 높은 세포는 자기 스스로 발현하는 mRNA가 많이 없다는 뜻이니 비실비실한 애들이라는 뜻
+VlnPlot(pbmc,
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3,
+        cols = "dodgerblue", # 만약 Violin Plot의 색을 마꾸고 싶으면 cols = "dodgeblue" 파라미터를 추가해 주면됨.
+        pt.size = 0.5)  
+```
+ 
+
+Violin plot으로 표현된 각각의 그래프를 합쳐서 서로의 연관성을 나타날 수 있다.
+"FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+for anything calculated by the object, i.e. columns in object metadata, PC scores etc"
+
+```{r}
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1+plot2
+```
+
+
+
+## 2) Quality Control
+지금 현재 데이터를 보면 눈에 거슬리는 anomalies(outlier)들이 있다. 지나치게 우측에 위치해있거나, 지나치게 위에 위치해있는 세포들은 결과의 질을 낮추기 때문에 걸러줘야한다. 
+
+*nFeature_RNA 가 지나치게 높거나 낮은 애들은 죽은 세포거나, doublet이 된 세포일 가능성이 높다. 
+또 Mitochondrial RNA 발현이 지나치게 높은 애들은 비실비실한 세포이니 역시 걸러주자
+
+nFeature_RNA 의 최저값을 200, 최고값을 2500으로 정하고 (즉 200-2500 사이의 결과만 사용)
+percent.mt 를 5% 미만으로 줄여줬다. 
+-> 각자 사용한 세포나 실험에 따라서 적용할 QC (Quality control)의 기준이 달라진다. 
+-> 다른 데이터에 응용하기 위해선 타 논문을 참고해서 알맞는 "보편적인" 수치를 취할 것. 
+```{r}
+pbmc <- subset(pbmc,
+               subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt <5
+               )
+```
+
+
+
+
+
+
+----
+# 3. Normalizing
+ By default, we employ a global-scaling normalization method “LogNormalize” that normalizes the feature expression measurements for each cell by the total expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result. Normalized values are stored in pbmc[["RNA"]]@data.
+ 
+```{r}
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# 사실 간단하게 저 세팅은 NormalizeData(pbmc)로 쓸 수 있음
+```
+
+----
+# 4. Identification of highly variable features (feature selection)
+ Normalizing이 끝나면, cell to cell variation이 높은 데이터를 FindVariableFeatures()를 이용해 찾아낸다. 
+-> 몇 개의 cell 에선 발현률이 높고, 몇 개의 cell에선 발현률이 낮은 것 
+
+```{r}
+pbmc <-  FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variables genes
+top10 <- head(VariableFeatures(pbmc), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2 
+```
+Variance가 높은 top 10 gene의 종류를 오른쪽 graph에서 label을 통해 알아볼 수 있다. 
+
+
+
+----
+# 5. Scaling the data
+Next, we apply a linear transformation (‘scaling’) that is a standard pre-processing step prior to dimensional reduction techniques like principal component analysis(PCA: 주성분 분석). The ScaleData() function:
+- Shifts the expression of each gene, so that the mean expression across cells is 0
+- cales the expression of each gene, so that the variance across cells is 1
+  ->This step gives equal weight in downstream analyses, so that highly-expressed genes do not dominate
+- The results of this are stored in pbmc[["RNA"]]@scale.data
+
+```{r}
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(pbmc, features = all.genes)
+```
+
+
+
+
+---
+#6. Perform linear dimensional reduction: PCA결과 확인하기
+
+Scaling이 끝난 데이터를 활용하여 PCA를 한다. 
+```{r}
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+```
+PCA 결과를 보는 여러 방법이 있다.
+
+## 1) 프린트하기
+```{r}
+print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+## 2) VizDimLoadings - Visualize Dimensional Reduction Genes
+- Seurat object = pbmc
+- dims = number of dimesions to display (eg. 1:2면 두 개)
+- reduction = reduction technique to visualse results for "pca"
+```{r}
+VizDimLoadings(pbmc, dims = 1:4, reduction = "pca")
+```
+
+## 3) DimPlot - dimentional reduction plot
+graphs the output of a dimentional reuduction technique on a 2D scatter plot where each point is a cll and its positioned based ont he cell embeddings determined by the reduction technique. cells are colored by their identity class (can be change with the group by parameter) 
+- Seurat object = pbmc
+- reduction = "pca"
+```{r}
+DimPlot(pbmc, reduction ="pca")
+```
+
+## 4) DimHeatmap - dimensional reduction heatmap
+allows easy exploration of the promary sources of heterogeneity in a dataset useful when trying to decide which PCs to include for futher downstream analyses. 
+- Seurat object = pbmc
+- dims = dimension to plot
+- cells = a list of cells to plot, if numeric, just plots the top cells 
+- balanced = plot an equal number of genes with both + and - scores
+```{r}
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(pbmc, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
